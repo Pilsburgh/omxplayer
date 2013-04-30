@@ -31,6 +31,14 @@
 
 #include "linux/XMemUtils.h"
 
+#ifndef STANDALONE
+#include "guilib/AudioContext.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/GUISettings.h"
+#include "settings/Settings.h"
+#include "guilib/LocalizeStrings.h"
+#endif
+
 #ifndef VOLUME_MINIMUM
 #define VOLUME_MINIMUM -6000  // -60dB
 #endif
@@ -200,7 +208,21 @@ bool COMXAudio::Initialize(IAudioCallback* pCallback, const CStdString& device, 
 
   memset(&m_wave_header, 0x0, sizeof(m_wave_header));
 
+#ifndef STANDALONE
+  bool bAudioOnAllSpeakers(false);
+  g_audioContext.SetupSpeakerConfig(iChannels, bAudioOnAllSpeakers, bIsMusic);
+
+  if(bPassthrough)
+  {
+    g_audioContext.SetActiveDevice(CAudioContext::DIRECTSOUND_DEVICE_DIGITAL);
+  } else {
+    g_audioContext.SetActiveDevice(CAudioContext::DIRECTSOUND_DEVICE);
+  }
+
+  m_CurrentVolume = g_settings.m_nVolumeLevel; 
+#else
   m_CurrentVolume = initialVolume;
+#endif
 
   m_downmix_channels = downmixChannels;
   m_normalize_downmix = !boostOnDownmix;
@@ -287,8 +309,7 @@ bool COMXAudio::Initialize(IAudioCallback* pCallback, const CStdString& device, 
 
   m_SampleRate    = uiSamplesPerSec;
   m_BitsPerSample = uiBitsPerSample;
-  m_BytesPerSec   = uiSamplesPerSec * (uiBitsPerSample >> 3) * m_InputChannels;
-  m_BufferLen     = uiSamplesPerSec * (m_pcm_output.nBitPerSample >> 3) * (m_InputChannels > 4 ? 8:m_InputChannels);
+  m_BufferLen     = m_BytesPerSec = uiSamplesPerSec * (uiBitsPerSample >> 3) * m_InputChannels;
   m_BufferLen     *= m_fifo_size;
   m_ChunkLen      = 4096 * (uiBitsPerSample >> 3) * m_InputChannels;
 
@@ -326,8 +347,6 @@ bool COMXAudio::Initialize(IAudioCallback* pCallback, const CStdString& device, 
   if(!m_omx_render.Initialize(componentName, OMX_IndexParamAudioInit))
     return false;
 
-  m_omx_render.ResetEos();
-
   OMX_CONFIG_BRCMAUDIODESTINATIONTYPE audioDest;
   OMX_INIT_STRUCTURE(audioDest);
   strncpy((char *)audioDest.sName, device.c_str(), strlen(device.c_str()));
@@ -361,46 +380,49 @@ bool COMXAudio::Initialize(IAudioCallback* pCallback, const CStdString& device, 
     }
   }
 
+  // set up the number/size of buffers
   OMX_PARAM_PORTDEFINITIONTYPE port_param;
-  // set up the number/size of buffers for decoder input
   OMX_INIT_STRUCTURE(port_param);
   port_param.nPortIndex = m_omx_decoder.GetInputPort();
 
   omx_err = m_omx_decoder.GetParameter(OMX_IndexParamPortDefinition, &port_param);
   if(omx_err != OMX_ErrorNone)
   {
-    CLog::Log(LOGERROR, "COMXAudio::Initialize error get OMX_IndexParamPortDefinition (input) omx_err(0x%08x)\n", omx_err);
+    CLog::Log(LOGERROR, "COMXAudio::Initialize error get OMX_IndexParamPortDefinition omx_err(0x%08x)\n", omx_err);
     return false;
   }
 
   port_param.format.audio.eEncoding = m_eEncoding;
+
   port_param.nBufferSize = m_ChunkLen;
-  port_param.nBufferCountActual = port_param.nBufferCountMin;
+  port_param.nBufferCountActual = 2;
 
   omx_err = m_omx_decoder.SetParameter(OMX_IndexParamPortDefinition, &port_param);
   if(omx_err != OMX_ErrorNone)
   {
-    CLog::Log(LOGERROR, "COMXAudio::Initialize error set OMX_IndexParamPortDefinition (intput) omx_err(0x%08x)\n", omx_err);
+    CLog::Log(LOGERROR, "COMXAudio::Initialize error set OMX_IndexParamPortDefinition omx_err(0x%08x)\n", omx_err);
     return false;
   }
 
-  // set up the number/size of buffers for decoder output
   OMX_INIT_STRUCTURE(port_param);
-  port_param.nPortIndex = m_omx_decoder.GetOutputPort();
+  port_param.nPortIndex = m_omx_mixer.GetInputPort();
 
-  omx_err = m_omx_decoder.GetParameter(OMX_IndexParamPortDefinition, &port_param);
+  omx_err = m_omx_mixer.GetParameter(OMX_IndexParamPortDefinition, &port_param);
   if(omx_err != OMX_ErrorNone)
   {
-    CLog::Log(LOGERROR, "COMXAudio::Initialize error get OMX_IndexParamPortDefinition (output) omx_err(0x%08x)\n", omx_err);
+    CLog::Log(LOGERROR, "COMXAudio::Initialize error get OMX_IndexParamPortDefinition omx_err(0x%08x)\n", omx_err);
     return false;
   }
 
-  port_param.nBufferCountActual = std::max(1U, m_BufferLen / port_param.nBufferSize);
+  port_param.format.audio.eEncoding = m_eEncoding;
 
-  omx_err = m_omx_decoder.SetParameter(OMX_IndexParamPortDefinition, &port_param);
+  port_param.nBufferSize = m_ChunkLen;
+  port_param.nBufferCountActual = std::max(1, m_BufferLen / port_param.nBufferSize);
+
+  omx_err = m_omx_mixer.SetParameter(OMX_IndexParamPortDefinition, &port_param);
   if(omx_err != OMX_ErrorNone)
   {
-    CLog::Log(LOGERROR, "COMXAudio::Initialize error set OMX_IndexParamPortDefinition (output) omx_err(0x%08x)\n", omx_err);
+    CLog::Log(LOGERROR, "COMXAudio::Initialize error set OMX_IndexParamPortDefinition omx_err(0x%08x)\n", omx_err);
     return false;
   }
 
@@ -1174,7 +1196,7 @@ unsigned int COMXAudio::GetAudioRenderingLatency()
   return param.nU32;
 }
 
-void COMXAudio::SubmitEOS()
+void COMXAudio::WaitCompletion()
 {
   if(!m_Initialized || m_Pause)
     return;
@@ -1200,14 +1222,23 @@ void COMXAudio::SubmitEOS()
     CLog::Log(LOGERROR, "%s::%s - OMX_EmptyThisBuffer() failed with result(0x%x)\n", CLASSNAME, __func__, omx_err);
     return;
   }
-}
 
-bool COMXAudio::IsEOS()
-{
-  if(!m_Initialized || m_Pause)
-    return false;
-  unsigned int latency = GetAudioRenderingLatency();
-  return m_omx_render.IsEOS() && latency <= 0;
+  while(true)
+  {
+    if(m_omx_render.IsEOS())
+      break;
+    OMXClock::OMXSleep(50);
+  }
+
+  while(true)
+  {
+    if(!GetAudioRenderingLatency())
+      break;
+
+    OMXClock::OMXSleep(50);
+  }
+
+  return;
 }
 
 void COMXAudio::SwitchChannels(int iAudioStream, bool bAudioOnAllSpeakers)
@@ -1217,6 +1248,18 @@ void COMXAudio::SwitchChannels(int iAudioStream, bool bAudioOnAllSpeakers)
 
 void COMXAudio::EnumerateAudioSinks(AudioSinkList& vAudioSinks, bool passthrough)
 {
+#ifndef STANDALONE
+  if (!passthrough)
+  {
+    vAudioSinks.push_back(AudioSink(g_localizeStrings.Get(409) + " (OMX)", "omx:default"));
+    vAudioSinks.push_back(AudioSink("analog (OMX)" , "omx:analog"));
+    vAudioSinks.push_back(AudioSink("hdmi (OMX)"   , "omx:hdmi"));
+  }
+  else
+  {
+    vAudioSinks.push_back(AudioSink("hdmi (OMX)"   , "omx:hdmi"));
+  }
+#endif
 }
 
 bool COMXAudio::SetClock(OMXClock *clock)
