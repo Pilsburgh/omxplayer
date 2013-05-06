@@ -126,11 +126,16 @@ void sig_handler(int s)
      g_abort = true;
      return;
   }
-  signal(SIGABRT, SIG_DFL);
-  signal(SIGSEGV, SIG_DFL);
-  signal(SIGFPE, SIG_DFL);
-  restore_term();
-  abort();
+  if (s==SIGUSR1) {
+    m_incr = -600.0;
+  } 
+  if (s!=SIGUSR1) {
+    signal(SIGABRT, SIG_DFL);
+    signal(SIGSEGV, SIG_DFL);
+    signal(SIGFPE, SIG_DFL);
+    restore_term();
+    abort();
+  }
 }
 
 void print_usage()
@@ -447,6 +452,7 @@ int main(int argc, char *argv[])
   signal(SIGABRT, sig_handler);
   signal(SIGFPE, sig_handler);
   signal(SIGINT, sig_handler);
+  signal(SIGUSR1, sig_handler);
 
   if (isatty(STDIN_FILENO))
   {
