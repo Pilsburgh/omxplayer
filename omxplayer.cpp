@@ -128,14 +128,14 @@ void sig_handler(int s)
   }
   if (s==SIGUSR1) {
     m_incr = -600.0;
+    return;
   } 
-  if (s!=SIGUSR1) {
+
     signal(SIGABRT, SIG_DFL);
     signal(SIGSEGV, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
     restore_term();
     abort();
-  }
 }
 
 void print_usage()
